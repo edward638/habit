@@ -1,0 +1,35 @@
+{
+  "recommendations": [
+    // Essential for TypeScript/JavaScript
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+
+    // Tailwind CSS support
+    "bradlc.vscode-tailwindcss",
+
+    // React/Next.js development
+    "dsznajder.es7-react-js-snippets",
+
+    // Better import suggestions
+    "christian-kohler.path-intellisense",
+
+    // Enhanced error display
+    "usernamehw.errorlens",
+
+    // Auto close/rename tags
+    "formulahendry.auto-close-tag",
+    "formulahendry.auto-rename-tag",
+
+    // Git integration
+    "eamodio.gitlens",
+
+    // Better code navigation
+    "ms-vscode.vscode-typescript-next",
+
+    // Colorize bracket pairs
+    "coenraads.bracket-pair-colorizer-2",
+
+    // Markdown preview (for README)
+    "yzhang.markdown-all-in-one"
+  ]
+}

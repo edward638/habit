@@ -33,3 +33,20 @@ export interface Goal {
   created_at: string;
   completed_at: string | null;
 }
+
+export interface NuggetCount {
+  id: number;
+  count: number;
+  updated_at: string;
+}
+
+export interface NuggetChangelogEntry {
+  id: number;
+  previous_count: number;
+  new_count: number;
+  change_amount: number;
+  note: string | null;
+  changed_by: string | null;
+  changed_by_email: string | null;
+  created_at: string;
+}

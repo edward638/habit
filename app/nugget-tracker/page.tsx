@@ -22,7 +22,6 @@ export default async function NuggetTrackerPage() {
 
   return (
     <NuggetTracker
-      userId={user?.id ?? null}
       userEmail={user?.email ?? null}
       isEditor={isEditor}
     />

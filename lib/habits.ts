@@ -152,6 +152,18 @@ export async function deleteHabit(
   if (error) throw error;
 }
 
+export async function updateHabit(
+  supabase: SupabaseClient,
+  habitId: number,
+  name: string
+): Promise<void> {
+  const { error } = await supabase
+    .from('habits')
+    .update({ name })
+    .eq('id', habitId);
+  if (error) throw error;
+}
+
 export async function toggleCompletion(
   supabase: SupabaseClient,
   userId: string,

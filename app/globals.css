@@ -3,6 +3,16 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  /* Theme colors - defaults to Indigo */
+  --theme-primary: #4f46e5;
+  --theme-primary-hover: #4338ca;
+  --theme-bg: #f9fafb;
+  --theme-card: #ffffff;
+  --theme-border: #d1d5db;
+  --theme-text: #111827;
+  --theme-text-muted: #6b7280;
+  --theme-streak: #f97316;
 }
 
 @theme inline {

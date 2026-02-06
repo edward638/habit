@@ -1,5 +1,13 @@
 import { createClient } from '@/lib/supabase/server';
 import NuggetTracker from './nugget-tracker';
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = {
+  title: "Nugget Tracker",
+  icons: {
+    icon: "/nugget.png",
+  },
+};
 
 export const dynamic = 'force-dynamic';
 

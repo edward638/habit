@@ -14,8 +14,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Habit Tracker",
-  description: "A simple daily habit tracker",
+  title: {
+    default: "Scrub Squirrel",
+    template: "%s | Scrub Squirrel",
+  },
+  description: "Scrub Squirrel's personal website",
 };
 
 export default function RootLayout({

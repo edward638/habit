@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { HabitWithStatus, Todo, Note, Goal } from '@/lib/types';
+import { HabitWithStatus, Todo, Note, Goal, HabitStack, HabitStackStep, Quote } from '@/lib/types';
 import {
   fetchHabitsForDate,
   addHabit,
@@ -34,8 +34,17 @@ import {
   updateGoal,
   deleteGoal,
 } from '@/lib/goals';
+import {
+  fetchStacksForDate,
+  addStack,
+  deleteStack,
+  addStep,
+  deleteStep,
+  toggleStepCompletion,
+} from '@/lib/habit-stacks';
+import { fetchRandomQuote, seedQuotesIfEmpty } from '@/lib/quotes';
 import { useTheme } from './theme-provider';
-import TftDashboard from './tft-dashboard';
+import NavBar from './nav-bar';
 
 interface HabitTrackerProps {
   userEmail: string | null;
@@ -76,6 +85,19 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
   const [newGoalTarget, setNewGoalTarget] = useState('');
   const [newGoalUnit, setNewGoalUnit] = useState('items');
 
+  // Habit Stacks state
+  const [stacks, setStacks] = useState<HabitStack[]>([]);
+  const [stacksLoaded, setStacksLoaded] = useState(false);
+  const [showAddStack, setShowAddStack] = useState(false);
+  const [newStackName, setNewStackName] = useState('');
+  const [newStackTimeLabel, setNewStackTimeLabel] = useState('');
+  const [expandedStackId, setExpandedStackId] = useState<number | null>(null);
+  const [newStepLabel, setNewStepLabel] = useState('');
+  const [newStepLinkedHabitId, setNewStepLinkedHabitId] = useState<number | null>(null);
+
+  // Quote state
+  const [dailyQuote, setDailyQuote] = useState<Quote | null>(null);
+
   // Edit state
   const [editingHabitId, setEditingHabitId] = useState<number | null>(null);
   const [editingHabitName, setEditingHabitName] = useState('');
@@ -112,7 +134,7 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
   useEffect(() => {
     let cancelled = false;
     fetchNotes(supabase, userId)
-      .then(data => { if (!cancelled) { setNotes(data); setNotesLoaded(true); } })
+      .then(data => { if (!cancelled) { setNotes(data); setNotesLoaded(true); if (data.length > 0) { setSelectedNote(data[0]); setNoteContent(data[0].content); } } })
       .catch(err => { if (!cancelled) { console.error('Failed to fetch notes:', err); setNotesLoaded(true); } });
     return () => { cancelled = true; };
   }, [supabase, userId]);
@@ -123,6 +145,28 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
     fetchGoals(supabase, userId)
       .then(data => { if (!cancelled) { setGoals(data); setGoalsLoaded(true); } })
       .catch(err => { if (!cancelled) { console.error('Failed to fetch goals:', err); setGoalsLoaded(true); } });
+    return () => { cancelled = true; };
+  }, [supabase, userId]);
+
+  // Fetch habit stacks (date-aware, like habits)
+  useEffect(() => {
+    let cancelled = false;
+    const dateStr = toDateString(selectedDate);
+    fetchStacksForDate(supabase, userId, dateStr)
+      .then(data => { if (!cancelled) { setStacks(data); setStacksLoaded(true); } })
+      .catch(err => { if (!cancelled) { console.error('Failed to fetch stacks:', err); setStacksLoaded(true); } });
+    return () => { cancelled = true; };
+  }, [supabase, userId, selectedDate]);
+
+  // Fetch random quote (seed if first time)
+  useEffect(() => {
+    let cancelled = false;
+    async function loadQuote() {
+      await seedQuotesIfEmpty(supabase, userId);
+      const quote = await fetchRandomQuote(supabase, userId);
+      if (!cancelled) setDailyQuote(quote);
+    }
+    loadQuote().catch(err => { if (!cancelled) console.error('Failed to fetch quote:', err); });
     return () => { cancelled = true; };
   }, [supabase, userId]);
 
@@ -156,6 +200,21 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
     }));
     try {
       await toggleCompletion(supabase, userId, habit.id, toDateString(selectedDate), habit.completed);
+      // Sync linked stack steps (habit -> step direction)
+      const linkedStep = stacks.flatMap(s => s.steps).find(st => st.linked_habit_id === habit.id);
+      if (linkedStep) {
+        const nowCompleted = !habit.completed;
+        if (linkedStep.completed !== nowCompleted) {
+          await toggleStepCompletion(supabase, userId, linkedStep.id, linkedStep.stack_id, toDateString(selectedDate), linkedStep.completed);
+          setStacks(prev2 => prev2.map(s => {
+            if (s.id !== linkedStep.stack_id) return s;
+            const updatedSteps = s.steps.map(st =>
+              st.id === linkedStep.id ? { ...st, completed: nowCompleted, completedAt: nowCompleted ? new Date().toISOString() : null } : st
+            );
+            return { ...s, steps: updatedSteps, allCompleted: updatedSteps.length > 0 && updatedSteps.every(st => st.completed) };
+          }));
+        }
+      }
     } catch {
       setHabits(h => h.map(item =>
         item.id === habit.id ? { ...item, ...prev } : item
@@ -314,6 +373,118 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
     }
   }
 
+  // Habit Stack handlers
+  async function handleAddStack() {
+    const name = newStackName.trim();
+    if (!name) return;
+    try {
+      const stackData = await addStack(supabase, userId, name, newStackTimeLabel.trim() || undefined);
+      const newStack: HabitStack = {
+        id: stackData.id,
+        name: stackData.name,
+        time_label: stackData.time_label,
+        created_at: stackData.created_at,
+        steps: [],
+        allCompleted: false,
+        currentStreak: 0,
+        longestStreak: 0,
+      };
+      setStacks(s => [...s, newStack]);
+      setNewStackName('');
+      setNewStackTimeLabel('');
+      setShowAddStack(false);
+      setExpandedStackId(newStack.id);
+    } catch (err) {
+      console.error('Failed to add stack:', err);
+    }
+  }
+
+  async function handleDeleteStack(stackId: number) {
+    if (!confirm('Delete this habit stack and all its steps?')) return;
+    const previous = stacks;
+    setStacks(s => s.filter(item => item.id !== stackId));
+    try {
+      await deleteStack(supabase, stackId);
+    } catch {
+      setStacks(previous);
+    }
+  }
+
+  async function handleAddStep(stackId: number) {
+    const label = newStepLabel.trim();
+    if (!label) return;
+    try {
+      const step = await addStep(supabase, userId, stackId, label, newStepLinkedHabitId ?? undefined);
+      setStacks(s => s.map(stack => {
+        if (stack.id !== stackId) return stack;
+        return { ...stack, steps: [...stack.steps, step], allCompleted: false };
+      }));
+      setNewStepLabel('');
+      setNewStepLinkedHabitId(null);
+    } catch (err) {
+      console.error('Failed to add step:', err);
+    }
+  }
+
+  async function handleDeleteStep(stackId: number, stepId: number) {
+    const previous = stacks;
+    setStacks(s => s.map(stack => {
+      if (stack.id !== stackId) return stack;
+      const updatedSteps = stack.steps.filter(st => st.id !== stepId);
+      return { ...stack, steps: updatedSteps, allCompleted: updatedSteps.length > 0 && updatedSteps.every(st => st.completed) };
+    }));
+    try {
+      await deleteStep(supabase, stepId);
+    } catch {
+      setStacks(previous);
+    }
+  }
+
+  async function handleToggleStep(stack: HabitStack, step: HabitStackStep) {
+    const prevStacks = stacks;
+    const prevHabits = habits;
+    const nowCompleted = !step.completed;
+
+    // Optimistic update for the step
+    setStacks(s => s.map(st => {
+      if (st.id !== stack.id) return st;
+      const updatedSteps = st.steps.map(s2 =>
+        s2.id === step.id ? { ...s2, completed: nowCompleted, completedAt: nowCompleted ? new Date().toISOString() : null } : s2
+      );
+      return { ...st, steps: updatedSteps, allCompleted: updatedSteps.length > 0 && updatedSteps.every(s2 => s2.completed) };
+    }));
+
+    // Optimistic update for linked habit
+    if (step.linked_habit_id) {
+      setHabits(h => h.map(habit => {
+        if (habit.id !== step.linked_habit_id) return habit;
+        if (habit.completed === nowCompleted) return habit;
+        const newCurrent = nowCompleted ? habit.currentStreak + 1 : Math.max(0, habit.currentStreak - 1);
+        return {
+          ...habit,
+          completed: nowCompleted,
+          completedAt: nowCompleted ? new Date().toISOString() : null,
+          currentStreak: newCurrent,
+          longestStreak: Math.max(habit.longestStreak, newCurrent),
+        };
+      }));
+    }
+
+    try {
+      await toggleStepCompletion(supabase, userId, step.id, stack.id, toDateString(selectedDate), step.completed);
+      // Sync linked habit (step -> habit direction)
+      if (step.linked_habit_id) {
+        const habit = habits.find(h => h.id === step.linked_habit_id);
+        if (habit && habit.completed !== nowCompleted) {
+          await toggleCompletion(supabase, userId, step.linked_habit_id, toDateString(selectedDate), habit.completed);
+        }
+      }
+    } catch {
+      setStacks(prevStacks);
+      setHabits(prevHabits);
+    }
+  }
+
   // Edit handlers
   function startEditHabit(habit: HabitWithStatus) {
     setEditingHabitId(habit.id);
@@ -422,11 +593,12 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: theme.colors.background }}>
-      <header className="max-w-6xl mx-auto px-4 pt-6 flex items-center justify-between">
-        <span className="text-sm truncate" style={{ color: theme.colors.textMuted }}>
-          {userEmail}
-        </span>
-        <div className="flex items-center gap-3">
+      <header className="max-w-6xl mx-auto px-4 pt-6 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-sm truncate" style={{ color: theme.colors.textMuted }}>
+            {userEmail}
+          </span>
+          <div className="flex items-center gap-3">
           {/* Theme picker */}
           <div className="relative">
             <button
@@ -469,10 +641,24 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
           <button onClick={handleLogout} className="text-sm hover:text-red-500 transition-colors" style={{ color: theme.colors.textMuted }}>
             Log out
           </button>
+          </div>
         </div>
+        <NavBar />
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-8">
+        {/* Motivational Quote */}
+        {dailyQuote && (
+          <div className="mb-6 p-4 rounded-xl text-center" style={{ backgroundColor: theme.colors.card }}>
+            <p className="text-sm italic" style={{ color: theme.colors.text }}>
+              &ldquo;{dailyQuote.text}&rdquo;
+            </p>
+            <p className="text-xs mt-1" style={{ color: theme.colors.textMuted }}>
+              &mdash; {dailyQuote.author}
+            </p>
+          </div>
+        )}
+
         {/* 2x2 Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Habit Tracker - Top Left */}
@@ -905,10 +1091,202 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
           </section>
         </div>
 
-        {/* TFT Analytics Section */}
+        {/* Habit Stacks Section */}
         <div className="mt-6">
-          <TftDashboard />
+          <section className="rounded-xl p-6 shadow-sm" style={{ backgroundColor: theme.colors.card }}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold" style={{ color: theme.colors.text }}>Habit Stacks</h2>
+              {viewingToday && (
+                <button
+                  onClick={() => setShowAddStack(!showAddStack)}
+                  className="text-sm px-2 py-1 rounded transition-colors"
+                  style={{ color: theme.colors.primary }}
+                >
+                  {showAddStack ? 'Cancel' : '+ Add'}
+                </button>
+              )}
+            </div>
+
+            {/* Add stack form */}
+            {showAddStack && viewingToday && (
+              <div className="mb-4 p-3 rounded-lg space-y-2" style={{ backgroundColor: theme.colors.background }}>
+                <input
+                  type="text"
+                  value={newStackName}
+                  onChange={e => setNewStackName(e.target.value)}
+                  placeholder="Stack name (e.g., Morning Routine)"
+                  className="w-full px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2"
+                  style={{ backgroundColor: theme.colors.card, borderColor: theme.colors.border, color: theme.colors.text }}
+                />
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newStackTimeLabel}
+                    onChange={e => setNewStackTimeLabel(e.target.value)}
+                    placeholder="Time label (optional, e.g., Morning)"
+                    className="flex-1 px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2"
+                    style={{ backgroundColor: theme.colors.card, borderColor: theme.colors.border, color: theme.colors.text }}
+                  />
+                  <button
+                    onClick={handleAddStack}
+                    className="px-3 py-2 text-white text-sm font-medium rounded-lg"
+                    style={{ backgroundColor: theme.colors.primary }}
+                  >
+                    Create
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Stacks list */}
+            {!stacksLoaded ? (
+              <p className="text-center py-4 text-sm" style={{ color: theme.colors.textMuted }}>Loading...</p>
+            ) : stacks.length === 0 ? (
+              <p className="text-center py-4 text-sm" style={{ color: theme.colors.textMuted }}>
+                No habit stacks yet. Create one to chain habits together!
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {stacks.map(stack => {
+                  const isExpanded = expandedStackId === stack.id;
+                  const completedCount = stack.steps.filter(s => s.completed).length;
+                  return (
+                    <div key={stack.id} className="rounded-lg overflow-hidden" style={{ backgroundColor: theme.colors.background }}>
+                      {/* Stack header */}
+                      <button
+                        onClick={() => setExpandedStackId(isExpanded ? null : stack.id)}
+                        className="w-full p-3 flex items-center justify-between text-left"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            className={`h-4 w-4 transition-transform flex-shrink-0 ${isExpanded ? 'rotate-90' : ''}`}
+                            style={{ color: theme.colors.textMuted }}
+                            viewBox="0 0 20 20"
+                            fill="currentColor"
+                          >
+                            <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+                          </svg>
+                          <span className="text-sm font-medium truncate" style={{ color: theme.colors.text }}>
+                            {stack.name}
+                          </span>
+                          {stack.time_label && (
+                            <span className="text-xs px-1.5 py-0.5 rounded flex-shrink-0" style={{ backgroundColor: theme.colors.primary + '20', color: theme.colors.primary }}>
+                              {stack.time_label}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                          <span className="text-xs" style={{ color: stack.allCompleted ? theme.colors.streak : theme.colors.textMuted }}>
+                            {completedCount}/{stack.steps.length}
+                            {stack.allCompleted && ' ✓'}
+                          </span>
+                          {stack.currentStreak > 0 && (
+                            <span className="text-xs font-medium" style={{ color: theme.colors.streak }}>
+                              🔥 {stack.currentStreak}d
+                            </span>
+                          )}
+                        </div>
+                      </button>
+
+                      {/* Expanded steps */}
+                      {isExpanded && (
+                        <div className="px-3 pb-3">
+                          {stack.steps.length === 0 ? (
+                            <p className="text-xs py-2 text-center" style={{ color: theme.colors.textMuted }}>
+                              No steps yet. Add your first step below.
+                            </p>
+                          ) : (
+                            <div className="space-y-1 mb-2">
+                              {stack.steps.map(step => (
+                                <div key={step.id} className="flex items-center gap-2 p-2 rounded group" style={{ backgroundColor: theme.colors.card }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={step.completed}
+                                    onChange={() => handleToggleStep(stack, step)}
+                                    className="h-4 w-4 rounded cursor-pointer flex-shrink-0"
+                                    style={{ accentColor: theme.colors.primary }}
+                                  />
+                                  <span
+                                    className={`text-sm flex-1 ${step.completed ? 'line-through' : ''}`}
+                                    style={{ color: step.completed ? theme.colors.textMuted : theme.colors.text }}
+                                  >
+                                    {step.label}
+                                  </span>
+                                  {step.linked_habit_id && (
+                                    <span className="text-xs flex-shrink-0" style={{ color: theme.colors.primary }}>
+                                      linked
+                                    </span>
+                                  )}
+                                  {viewingToday && (
+                                    <button
+                                      onClick={() => handleDeleteStep(stack.id, step.id)}
+                                      className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                                    >
+                                      <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor">
+                                        <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                                      </svg>
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Add step form */}
+                          {viewingToday && (
+                            <div className="flex gap-2 items-center">
+                              <input
+                                type="text"
+                                value={expandedStackId === stack.id ? newStepLabel : ''}
+                                onChange={e => setNewStepLabel(e.target.value)}
+                                placeholder="Add step..."
+                                className="flex-1 px-2 py-1.5 rounded border text-sm focus:outline-none focus:ring-2"
+                                style={{ backgroundColor: theme.colors.card, borderColor: theme.colors.border, color: theme.colors.text }}
+                                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddStep(stack.id); } }}
+                              />
+                              <select
+                                value={newStepLinkedHabitId ?? ''}
+                                onChange={e => setNewStepLinkedHabitId(e.target.value ? parseInt(e.target.value) : null)}
+                                className="px-2 py-1.5 rounded border text-xs focus:outline-none"
+                                style={{ backgroundColor: theme.colors.card, borderColor: theme.colors.border, color: theme.colors.text }}
+                              >
+                                <option value="">No link</option>
+                                {habits.map(h => (
+                                  <option key={h.id} value={h.id}>{h.name}</option>
+                                ))}
+                              </select>
+                              <button
+                                onClick={() => handleAddStep(stack.id)}
+                                className="px-2 py-1.5 text-white text-xs font-medium rounded"
+                                style={{ backgroundColor: theme.colors.primary }}
+                              >
+                                Add
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Delete stack button */}
+                          {viewingToday && (
+                            <div className="mt-2 pt-2 border-t flex justify-end" style={{ borderColor: theme.colors.border }}>
+                              <button
+                                onClick={() => handleDeleteStack(stack.id)}
+                                className="text-xs text-red-400 hover:text-red-500"
+                              >
+                                Delete stack
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
         </div>
+
       </main>
 
       {/* Delete habit confirmation modal */}

@@ -9,6 +9,7 @@ const NAV_LINKS = [
   { href: '/quotes', label: 'Quotes' },
   { href: '/art-coach', label: 'Art Coach' },
   { href: '/color-match', label: 'Color Match' },
+  { href: '/wordle', label: 'Sixle' },
   { href: '/reservations', label: 'Reservations' },
   { href: '/tft', label: 'TFT' },
 ];

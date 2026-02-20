@@ -6,7 +6,8 @@
       "Bash(dir:*)",
       "Bash(npm run build:*)",
       "Bash(where:*)",
-      "Bash(npx supabase:*)"
+      "Bash(npx supabase:*)",
+      "Bash(node build-wordlist.mjs:*)"
     ]
   }
 }

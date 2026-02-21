@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTheme } from '../theme-provider';
 import NavBar from '../nav-bar';
 import { ANSWER_WORDS, VALID_WORDS } from './word-list';
@@ -426,15 +426,43 @@ function NextPuzzleCountdown({ theme }: { theme: { text: string; textMuted: stri
   );
 }
 
+// ─── Share helper ───
+function generateShareText(
+  guesses: string[],
+  evaluations: TileState[][],
+  gameStatus: GameState['status'],
+  date: string,
+): string {
+  const count = gameStatus === 'won' ? String(guesses.length) : 'X';
+  const grid = evaluations
+    .map(row =>
+      row.map(s => s === 'correct' ? '🟩' : s === 'present' ? '🟨' : '⬛').join('')
+    )
+    .join('\n');
+  return `Sixle ${date} ${count}/6\n\n${grid}`;
+}
+
 // ─── Stats modal ───
 interface StatsModalProps {
   stats: GameStats;
   onClose: () => void;
   gameStatus: GameState['status'];
+  guesses: string[];
+  evaluations: TileState[][];
+  date: string;
   theme: ReturnType<typeof useTheme>['theme'];
 }
 
-function StatsModal({ stats, onClose, gameStatus, theme }: StatsModalProps) {
+function StatsModal({ stats, onClose, gameStatus, guesses, evaluations, date, theme }: StatsModalProps) {
+  const [copied, setCopied] = useState(false);
+
+  function handleShare() {
+    const text = generateShareText(guesses, evaluations, gameStatus, date);
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
   const maxDist = Math.max(...Object.values(stats.distribution), 1);
   const statItems = [
     { label: 'Played', value: stats.gamesPlayed },
@@ -495,9 +523,30 @@ function StatsModal({ stats, onClose, gameStatus, theme }: StatsModalProps) {
           })}
         </div>
 
-        {/* Countdown if game is over */}
+        {/* Countdown + share if game is over */}
         {(gameStatus === 'won' || gameStatus === 'lost') && (
-          <NextPuzzleCountdown theme={theme.colors} />
+          <>
+            <NextPuzzleCountdown theme={theme.colors} />
+            <button
+              onClick={handleShare}
+              style={{
+                marginTop: 16,
+                width: '100%',
+                padding: '12px 0',
+                borderRadius: 8,
+                fontWeight: 700,
+                fontSize: 15,
+                backgroundColor: copied ? '#16a34a' : COLORS.correct,
+                color: '#fff',
+                border: 'none',
+                cursor: 'pointer',
+                transition: 'background-color 0.2s',
+                letterSpacing: '0.03em',
+              }}
+            >
+              {copied ? '✓ Copied!' : 'Share'}
+            </button>
+          </>
         )}
       </div>
     </div>
@@ -538,17 +587,6 @@ export default function WordleGame() {
     if (shakeTimerRef.current) clearTimeout(shakeTimerRef.current);
     shakeTimerRef.current = setTimeout(() => setShakeRow(null), 600);
   }
-
-  const handleKey = useCallback((key: string) => {
-    setGameState(gs => {
-      if (gs.status !== 'playing') return gs;
-      return gs;
-    });
-    setRevealingRow(rv => {
-      if (rv !== null) return rv; // block input during reveal
-      return rv;
-    });
-  }, []);
 
   // Use refs to always have fresh state in the keyboard listener
   const stateRef = useRef(gameState);
@@ -667,6 +705,9 @@ export default function WordleGame() {
           stats={stats}
           onClose={() => setShowStats(false)}
           gameStatus={gameState.status}
+          guesses={gameState.guesses}
+          evaluations={evaluations}
+          date={gameState.date}
           theme={theme}
         />
       )}

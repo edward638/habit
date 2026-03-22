@@ -78,7 +78,7 @@ export async function fetchHabitsForDate(
 ): Promise<HabitWithStatus[]> {
   const { data: habits, error: hErr } = await supabase
     .from('habits')
-    .select('id, name, created_at')
+    .select('id, name, created_at, is_paused')
     .eq('user_id', userId)
     .order('created_at', { ascending: true });
 
@@ -123,6 +123,7 @@ export async function fetchHabitsForDate(
       completedAt: completionMap.get(h.id) ?? null,
       currentStreak: streaks.current,
       longestStreak: streaks.longest,
+      is_paused: h.is_paused ?? false,
     };
   });
 }
@@ -160,6 +161,18 @@ export async function updateHabit(
   const { error } = await supabase
     .from('habits')
     .update({ name })
+    .eq('id', habitId);
+  if (error) throw error;
+}
+
+export async function togglePause(
+  supabase: SupabaseClient,
+  habitId: number,
+  currentlyPaused: boolean
+): Promise<void> {
+  const { error } = await supabase
+    .from('habits')
+    .update({ is_paused: !currentlyPaused })
     .eq('id', habitId);
   if (error) throw error;
 }

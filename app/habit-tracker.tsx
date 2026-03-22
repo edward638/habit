@@ -3,12 +3,31 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { HabitWithStatus, Todo, Note, Goal, HabitStack, HabitStackStep, Quote } from '@/lib/types';
+import { HabitWithStatus, Todo, Note, Goal, HabitStack, HabitStackStep, Quote, PiggyBank } from '@/lib/types';
+import {
+  fetchOrCreatePiggyBank,
+  addHabitEarning,
+  removeHabitEarning,
+  applyMissedDeductions,
+  markDeductionDone,
+  needsDeduction,
+  getYesterdayMissedHabits,
+  getYesterdayDateString,
+  withdraw,
+  fetchTransactions,
+  fetchStats,
+  formatBalance,
+  DOLLARS_PER_HABIT,
+} from '@/lib/piggy-bank';
+import type { PiggyBankStats } from '@/lib/piggy-bank';
+import type { PiggyBankTransaction } from '@/lib/types';
+import PiggyBankWidget from './piggy-bank-widget';
 import {
   fetchHabitsForDate,
   addHabit,
   deleteHabit,
   toggleCompletion,
+  togglePause,
   updateHabit,
   toDateString,
   isToday,
@@ -98,6 +117,21 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
   // Quote state
   const [dailyQuote, setDailyQuote] = useState<Quote | null>(null);
 
+  // Piggy bank state
+  const [piggyBank, setPiggyBank] = useState<PiggyBank | null>(null);
+  const [piggyAnimate, setPiggyAnimate] = useState<'earn' | 'lose' | null>(null);
+  const [showYesterdayModal, setShowYesterdayModal] = useState(false);
+  const [yesterdayMissedHabits, setYesterdayMissedHabits] = useState<{ id: number; name: string; checked: boolean }[]>([]);
+  const [applyingDeductions, setApplyingDeductions] = useState(false);
+  const [piggyStats, setPiggyStats] = useState<PiggyBankStats | null>(null);
+  const [piggyTransactions, setPiggyTransactions] = useState<PiggyBankTransaction[]>([]);
+  const [piggyDataLoaded, setPiggyDataLoaded] = useState(false);
+  const [showPiggyStats, setShowPiggyStats] = useState(false);
+  const [showWithdrawForm, setShowWithdrawForm] = useState(false);
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [withdrawNote, setWithdrawNote] = useState('');
+  const [withdrawing, setWithdrawing] = useState(false);
+
   // Edit state
   const [editingHabitId, setEditingHabitId] = useState<number | null>(null);
   const [editingHabitName, setEditingHabitName] = useState('');
@@ -170,6 +204,40 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
     return () => { cancelled = true; };
   }, [supabase, userId]);
 
+  // Load piggy bank and check for yesterday deductions
+  useEffect(() => {
+    let cancelled = false;
+    async function loadPiggyBank() {
+      const bank = await fetchOrCreatePiggyBank(supabase, userId);
+      if (cancelled) return;
+      setPiggyBank(bank);
+      // Load stats and transaction history
+      const [stats, txns] = await Promise.all([
+        fetchStats(supabase, userId),
+        fetchTransactions(supabase, userId),
+      ]);
+      if (!cancelled) {
+        setPiggyStats(stats);
+        setPiggyTransactions(txns);
+        setPiggyDataLoaded(true);
+      }
+      if (!needsDeduction(bank)) return;
+      // Need to handle yesterday's missed habits
+      const missed = await getYesterdayMissedHabits(supabase, userId);
+      if (cancelled) return;
+      if (missed.length === 0) {
+        // All habits done yesterday — silently mark deduction done
+        await markDeductionDone(supabase, userId);
+        setPiggyBank(pb => pb ? { ...pb, last_deduction_date: getYesterdayDateString() } : pb);
+      } else {
+        setYesterdayMissedHabits(missed.map(h => ({ ...h, checked: false })));
+        setShowYesterdayModal(true);
+      }
+    }
+    loadPiggyBank().catch(err => { if (!cancelled) console.error('Failed to load piggy bank:', JSON.stringify(err)); });
+    return () => { cancelled = true; };
+  }, [supabase, userId]);
+
   // Habit handlers
   async function handleAddHabit() {
     const name = newHabit.trim();
@@ -200,6 +268,24 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
     }));
     try {
       await toggleCompletion(supabase, userId, habit.id, toDateString(selectedDate), habit.completed);
+      // Update piggy bank when toggling today's habits
+      if (viewingToday) {
+        const nowCompleted = !habit.completed;
+        try {
+          const newBalance = nowCompleted
+            ? await addHabitEarning(supabase, userId, habit.name)
+            : await removeHabitEarning(supabase, userId, habit.name);
+          setPiggyBank(pb => pb ? { ...pb, balance_cents: newBalance } : pb);
+          setPiggyAnimate(nowCompleted ? 'earn' : 'lose');
+          setTimeout(() => setPiggyAnimate(null), 800);
+          // Refresh stats + transactions
+          const [stats, txns] = await Promise.all([fetchStats(supabase, userId), fetchTransactions(supabase, userId)]);
+          setPiggyStats(stats);
+          setPiggyTransactions(txns);
+        } catch (err) {
+          console.error('Failed to update piggy bank:', err);
+        }
+      }
       // Sync linked stack steps (habit -> step direction)
       const linkedStep = stacks.flatMap(s => s.steps).find(st => st.linked_habit_id === habit.id);
       if (linkedStep) {
@@ -227,6 +313,18 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
     setHabits(h => h.filter(item => item.id !== habitId));
     try {
       await deleteHabit(supabase, habitId);
+    } catch {
+      setHabits(previous);
+    }
+  }
+
+  async function handlePauseToggle(habit: HabitWithStatus) {
+    const previous = habits;
+    setHabits(h => h.map(item =>
+      item.id === habit.id ? { ...item, is_paused: !item.is_paused } : item
+    ));
+    try {
+      await togglePause(supabase, habit.id, habit.is_paused);
     } catch {
       setHabits(previous);
     }
@@ -568,6 +666,64 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
     router.refresh();
   }
 
+  // Yesterday modal: retroactively complete a habit
+  async function handleRetroCheck(habitId: number) {
+    const habit = yesterdayMissedHabits.find(h => h.id === habitId);
+    if (!habit) return;
+    const nowChecked = !habit.checked;
+    setYesterdayMissedHabits(prev => prev.map(h => h.id === habitId ? { ...h, checked: nowChecked } : h));
+    // Retroactively toggle completion for yesterday
+    try {
+      await toggleCompletion(supabase, userId, habitId, getYesterdayDateString(), !nowChecked);
+    } catch (err) {
+      console.error('Failed to retroactively complete habit:', err);
+      setYesterdayMissedHabits(prev => prev.map(h => h.id === habitId ? { ...h, checked: !nowChecked } : h));
+    }
+  }
+
+  async function handleApplyDeductions() {
+    setApplyingDeductions(true);
+    const stillMissed = yesterdayMissedHabits.filter(h => !h.checked);
+    try {
+      const newBalance = await applyMissedDeductions(supabase, userId, stillMissed);
+      setPiggyBank(pb => pb ? { ...pb, balance_cents: newBalance, last_deduction_date: getYesterdayDateString() } : pb);
+      if (stillMissed.length > 0) {
+        setPiggyAnimate('lose');
+        setTimeout(() => setPiggyAnimate(null), 800);
+      }
+      // Refresh stats and transactions
+      const [stats, txns] = await Promise.all([fetchStats(supabase, userId), fetchTransactions(supabase, userId)]);
+      setPiggyStats(stats);
+      setPiggyTransactions(txns);
+    } catch (err) {
+      console.error('Failed to apply deductions:', err);
+    }
+    setApplyingDeductions(false);
+    setShowYesterdayModal(false);
+  }
+
+  async function handleWithdraw() {
+    const cents = Math.round(parseFloat(withdrawAmount) * 100);
+    if (!cents || cents <= 0 || !withdrawNote.trim()) return;
+    setWithdrawing(true);
+    try {
+      const newBalance = await withdraw(supabase, userId, cents, withdrawNote.trim());
+      setPiggyBank(pb => pb ? { ...pb, balance_cents: newBalance } : pb);
+      setPiggyAnimate('lose');
+      setTimeout(() => setPiggyAnimate(null), 800);
+      // Refresh stats and transactions
+      const [stats, txns] = await Promise.all([fetchStats(supabase, userId), fetchTransactions(supabase, userId)]);
+      setPiggyStats(stats);
+      setPiggyTransactions(txns);
+      setWithdrawAmount('');
+      setWithdrawNote('');
+      setShowWithdrawForm(false);
+    } catch (err) {
+      console.error('Failed to withdraw:', err);
+    }
+    setWithdrawing(false);
+  }
+
   function goToPreviousDay() {
     setSelectedDate(prev => {
       const d = new Date(prev);
@@ -659,6 +815,115 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
           </div>
         )}
 
+        {/* Piggy Bank */}
+        {piggyBank !== null && (
+          <div className="mb-6 rounded-xl shadow-sm" style={{ backgroundColor: theme.colors.card }}>
+            <div className="p-6 flex flex-col items-center">
+              <PiggyBankWidget balanceCents={piggyBank.balance_cents} animate={piggyAnimate} />
+
+              {/* Action buttons */}
+              <div className="flex gap-3 mt-4">
+                <button
+                  onClick={() => { setShowWithdrawForm(v => !v); setShowPiggyStats(false); }}
+                  className="px-4 py-2 text-sm font-medium rounded-lg transition-colors"
+                  style={{ backgroundColor: theme.colors.primary, color: 'white' }}
+                >
+                  Withdraw
+                </button>
+                <button
+                  onClick={() => { setShowPiggyStats(v => !v); setShowWithdrawForm(false); }}
+                  className="px-4 py-2 text-sm font-medium rounded-lg transition-colors"
+                  style={{ border: `1px solid ${theme.colors.border}`, color: theme.colors.text, backgroundColor: 'transparent' }}
+                >
+                  {showPiggyStats ? 'Hide Stats' : 'Stats & History'}
+                </button>
+              </div>
+
+              {/* Withdraw form */}
+              {showWithdrawForm && (
+                <div className="mt-4 w-full max-w-xs space-y-2">
+                  <input
+                    type="number"
+                    value={withdrawAmount}
+                    onChange={e => setWithdrawAmount(e.target.value)}
+                    placeholder="Amount ($)"
+                    min="0.01"
+                    step="0.01"
+                    className="w-full px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2"
+                    style={{ backgroundColor: theme.colors.background, borderColor: theme.colors.border, color: theme.colors.text }}
+                  />
+                  <input
+                    type="text"
+                    value={withdrawNote}
+                    onChange={e => setWithdrawNote(e.target.value)}
+                    placeholder="What did you buy?"
+                    className="w-full px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2"
+                    style={{ backgroundColor: theme.colors.background, borderColor: theme.colors.border, color: theme.colors.text }}
+                  />
+                  <button
+                    onClick={handleWithdraw}
+                    disabled={withdrawing || !withdrawAmount || !withdrawNote.trim()}
+                    className="w-full py-2 text-white text-sm font-semibold rounded-lg disabled:opacity-50"
+                    style={{ backgroundColor: theme.colors.primary }}
+                  >
+                    {withdrawing ? 'Saving…' : 'Confirm Withdrawal'}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Stats & history panel */}
+            {showPiggyStats && piggyDataLoaded && (
+              <div className="border-t px-6 pb-6 pt-4" style={{ borderColor: theme.colors.border }}>
+                {/* Summary stats */}
+                {piggyStats && (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+                    {[
+                      { label: 'Total earned', value: formatBalance(piggyStats.totalEarnedCents), color: theme.colors.primary },
+                      { label: 'Total deducted', value: formatBalance(piggyStats.totalDeductedCents), color: '#ef4444' },
+                      { label: 'Habits done', value: piggyStats.habitsCompleted.toString(), color: theme.colors.streak },
+                      { label: 'Habits missed', value: piggyStats.habitsMissed.toString(), color: theme.colors.textMuted },
+                    ].map(stat => (
+                      <div key={stat.label} className="p-3 rounded-lg text-center" style={{ backgroundColor: theme.colors.background }}>
+                        <div className="text-lg font-bold" style={{ color: stat.color }}>{stat.value}</div>
+                        <div className="text-xs mt-0.5" style={{ color: theme.colors.textMuted }}>{stat.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Transaction history */}
+                <h3 className="text-sm font-semibold mb-3" style={{ color: theme.colors.text }}>Transaction history</h3>
+                <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                  {piggyTransactions.length === 0 ? (
+                    <p className="text-sm text-center py-4" style={{ color: theme.colors.textMuted }}>No transactions yet.</p>
+                  ) : piggyTransactions.map(tx => {
+                    const isPositive = tx.amount_cents > 0;
+                    const icon = tx.type === 'withdrawal' ? '🛍️' : tx.type === 'habit_complete' ? '✅' : '❌';
+                    const label = tx.note ?? (tx.type === 'habit_complete' ? 'Habit completed' : tx.type === 'habit_missed' ? 'Habit missed' : 'Withdrawal');
+                    return (
+                      <div key={tx.id} className="flex items-center justify-between px-3 py-2 rounded-lg text-sm" style={{ backgroundColor: theme.colors.background }}>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span>{icon}</span>
+                          <span className="truncate" style={{ color: theme.colors.text }}>{label}</span>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0 ml-2">
+                          <span className="font-medium" style={{ color: isPositive ? theme.colors.primary : '#ef4444' }}>
+                            {isPositive ? '+' : ''}{formatBalance(tx.amount_cents)}
+                          </span>
+                          <span className="text-xs" style={{ color: theme.colors.textMuted }}>
+                            {new Date(tx.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* 2x2 Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Habit Tracker - Top Left */}
@@ -708,13 +973,18 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
                 </p>
               ) : (
                 habits.map(habit => (
-                  <div key={habit.id} className="flex items-center gap-3 p-3 rounded-lg" style={{ backgroundColor: theme.colors.background }}>
+                  <div
+                    key={habit.id}
+                    className="flex items-center gap-3 p-3 rounded-lg"
+                    style={{ backgroundColor: theme.colors.background, opacity: habit.is_paused ? 0.55 : 1 }}
+                  >
                     <input
                       type="checkbox"
                       checked={habit.completed}
                       onChange={() => handleToggle(habit)}
+                      disabled={habit.is_paused}
                       className="h-4 w-4 rounded cursor-pointer"
-                      style={{ accentColor: theme.colors.primary }}
+                      style={{ accentColor: theme.colors.primary, cursor: habit.is_paused ? 'not-allowed' : 'pointer' }}
                     />
                     <div className="flex-1 min-w-0">
                       {editingHabitId === habit.id ? (
@@ -734,25 +1004,40 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
                           <span
                             className={`text-sm truncate cursor-pointer ${habit.completed ? 'line-through' : ''}`}
                             style={{ color: habit.completed ? theme.colors.textMuted : theme.colors.text }}
-                            onDoubleClick={() => viewingToday && startEditHabit(habit)}
-                            title={viewingToday ? 'Double-click to edit' : ''}
+                            onDoubleClick={() => viewingToday && !habit.is_paused && startEditHabit(habit)}
+                            title={viewingToday && !habit.is_paused ? 'Double-click to edit' : ''}
                           >
                             {habit.name}
                           </span>
-                          {habit.currentStreak > 0 && (
-                            <span className="text-xs font-medium flex-shrink-0" style={{ color: theme.colors.streak }}>🔥 {habit.currentStreak}d</span>
+                          {habit.is_paused && (
+                            <span className="text-xs font-semibold px-2 py-0.5 rounded-full shrink-0" style={{ backgroundColor: theme.colors.border, color: theme.colors.textMuted }}>
+                              Paused
+                            </span>
+                          )}
+                          {!habit.is_paused && habit.currentStreak > 0 && (
+                            <span className="text-xs font-medium shrink-0" style={{ color: theme.colors.streak }}>🔥 {habit.currentStreak}d</span>
                           )}
                         </div>
                       )}
                     </div>
                     {viewingToday && editingHabitId !== habit.id && (
                       <>
-                        <button onClick={() => startEditHabit(habit)} className="text-gray-400 hover:text-blue-500 flex-shrink-0" title="Edit">
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                            <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
-                          </svg>
+                        <button
+                          onClick={() => handlePauseToggle(habit)}
+                          className="shrink-0 text-xs px-2 py-0.5 rounded"
+                          style={{ border: `1px solid ${theme.colors.border}`, color: theme.colors.textMuted, backgroundColor: 'transparent', cursor: 'pointer' }}
+                          title={habit.is_paused ? 'Resume habit' : 'Pause habit'}
+                        >
+                          {habit.is_paused ? '▶' : '⏸'}
                         </button>
-                        <button onClick={() => setHabitToDelete(habit)} className="text-gray-400 hover:text-red-500 flex-shrink-0" title="Delete">
+                        {!habit.is_paused && (
+                          <button onClick={() => startEditHabit(habit)} className="text-gray-400 hover:text-blue-500 shrink-0" title="Edit">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                            </svg>
+                          </button>
+                        )}
+                        <button onClick={() => setHabitToDelete(habit)} className="text-gray-400 hover:text-red-500 shrink-0" title="Delete">
                           <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
                             <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
                           </svg>
@@ -896,7 +1181,7 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
                       <span className="text-sm truncate" style={{ color: theme.colors.text }}>{note.title || 'Untitled'}</span>
                       <button
                         onClick={e => { e.stopPropagation(); handleDeleteNote(note.id); }}
-                        className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-1"
+                        className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-1"
                       >
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor">
                           <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
@@ -1160,7 +1445,7 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
                         <div className="flex items-center gap-2 min-w-0">
                           <svg
                             xmlns="http://www.w3.org/2000/svg"
-                            className={`h-4 w-4 transition-transform flex-shrink-0 ${isExpanded ? 'rotate-90' : ''}`}
+                            className={`h-4 w-4 transition-transform shrink-0 ${isExpanded ? 'rotate-90' : ''}`}
                             style={{ color: theme.colors.textMuted }}
                             viewBox="0 0 20 20"
                             fill="currentColor"
@@ -1171,12 +1456,12 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
                             {stack.name}
                           </span>
                           {stack.time_label && (
-                            <span className="text-xs px-1.5 py-0.5 rounded flex-shrink-0" style={{ backgroundColor: theme.colors.primary + '20', color: theme.colors.primary }}>
+                            <span className="text-xs px-1.5 py-0.5 rounded shrink-0" style={{ backgroundColor: theme.colors.primary + '20', color: theme.colors.primary }}>
                               {stack.time_label}
                             </span>
                           )}
                         </div>
-                        <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                        <div className="flex items-center gap-2 shrink-0 ml-2">
                           <span className="text-xs" style={{ color: stack.allCompleted ? theme.colors.streak : theme.colors.textMuted }}>
                             {completedCount}/{stack.steps.length}
                             {stack.allCompleted && ' ✓'}
@@ -1204,7 +1489,7 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
                                     type="checkbox"
                                     checked={step.completed}
                                     onChange={() => handleToggleStep(stack, step)}
-                                    className="h-4 w-4 rounded cursor-pointer flex-shrink-0"
+                                    className="h-4 w-4 rounded cursor-pointer shrink-0"
                                     style={{ accentColor: theme.colors.primary }}
                                   />
                                   <span
@@ -1214,14 +1499,14 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
                                     {step.label}
                                   </span>
                                   {step.linked_habit_id && (
-                                    <span className="text-xs flex-shrink-0" style={{ color: theme.colors.primary }}>
+                                    <span className="text-xs shrink-0" style={{ color: theme.colors.primary }}>
                                       linked
                                     </span>
                                   )}
                                   {viewingToday && (
                                     <button
                                       onClick={() => handleDeleteStep(stack.id, step.id)}
-                                      className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                                      className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
                                     >
                                       <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor">
                                         <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
@@ -1288,6 +1573,49 @@ export default function HabitTracker({ userEmail, userId }: HabitTrackerProps) {
         </div>
 
       </main>
+
+      {/* Yesterday habits modal */}
+      {showYesterdayModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="rounded-xl shadow-xl max-w-sm w-full p-6" style={{ backgroundColor: theme.colors.card }}>
+            <h2 className="text-lg font-semibold mb-1" style={{ color: theme.colors.text }}>
+              Did you forget anything yesterday?
+            </h2>
+            <p className="text-sm mb-4" style={{ color: theme.colors.textMuted }}>
+              Check off any habits you completed but forgot to log. Unchecked habits will be deducted from your piggy bank.
+            </p>
+            <div className="space-y-2 mb-5">
+              {yesterdayMissedHabits.map(h => (
+                <label key={h.id} className="flex items-center gap-3 p-3 rounded-lg cursor-pointer" style={{ backgroundColor: theme.colors.background }}>
+                  <input
+                    type="checkbox"
+                    checked={h.checked}
+                    onChange={() => handleRetroCheck(h.id)}
+                    className="h-4 w-4 rounded"
+                    style={{ accentColor: theme.colors.primary }}
+                  />
+                  <span className={`text-sm ${h.checked ? 'line-through' : ''}`} style={{ color: h.checked ? theme.colors.textMuted : theme.colors.text }}>
+                    {h.name}
+                  </span>
+                </label>
+              ))}
+            </div>
+            <div className="text-sm mb-4 text-center" style={{ color: theme.colors.textMuted }}>
+              {yesterdayMissedHabits.filter(h => !h.checked).length === 0
+                ? 'No deductions — all habits accounted for!'
+                : `Deduction: -$${yesterdayMissedHabits.filter(h => !h.checked).length * DOLLARS_PER_HABIT}`}
+            </div>
+            <button
+              onClick={handleApplyDeductions}
+              disabled={applyingDeductions}
+              className="w-full py-2.5 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-50"
+              style={{ backgroundColor: theme.colors.primary }}
+            >
+              {applyingDeductions ? 'Saving…' : 'Done'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Delete habit confirmation modal */}
       {habitToDelete && (

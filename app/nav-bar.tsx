@@ -12,6 +12,7 @@ const NAV_LINKS = [
   { href: '/wordle', label: 'Sixle' },
   { href: '/reservations', label: 'Reservations' },
   { href: '/tft', label: 'TFT' },
+  { href: '/amex-points', label: 'Amex Points' },
 ];
 
 export default function NavBar() {

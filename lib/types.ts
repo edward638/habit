@@ -6,6 +6,36 @@ export interface HabitWithStatus {
   completedAt: string | null;
   currentStreak: number;
   longestStreak: number;
+  is_paused: boolean;
+}
+
+export interface UserPuzzle {
+  id: string;
+  user_id: string;
+  painting_id: string;
+  revealed_tiles: number[];
+  last_deduction_date: string | null;
+  status: 'active' | 'completed' | 'guessed';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PiggyBank {
+  id: string;
+  user_id: string;
+  balance_cents: number;
+  last_deduction_date: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PiggyBankTransaction {
+  id: string;
+  user_id: string;
+  amount_cents: number;
+  type: 'habit_complete' | 'habit_missed' | 'withdrawal' | 'deduction';
+  note: string | null;
+  created_at: string;
 }
 
 export interface Todo {
@@ -144,6 +174,14 @@ export interface Quote {
   text: string;
   author: string;
   created_at: string;
+}
+
+export interface AmexBalance {
+  id: number;
+  user_id: string;
+  points: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ColorMatchScore {

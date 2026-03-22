@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew assembleDebug)",
+      "Bash(ls gradlew*)",
+      "Bash(curl -sL \"https://github.com/gradle/gradle/raw/v8.9.0/gradle/wrapper/gradle-wrapper.jar\" -o /c/Users/edwar/Documents/GitHub/habit-android/gradle/wrapper/gradle-wrapper.jar)",
+      "Bash(cmd //c gradlew.bat assembleDebug)",
+      "Bash(cmd //c \"C:\\\\Users\\\\edwar\\\\Documents\\\\GitHub\\\\habit-android\\\\gradlew.bat assembleDebug\")",
+      "Read(//c/Users/edwar/**)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Program Files/Android/**)",
+      "Bash(export JAVA_HOME=\"/c/Program Files/Android/Android Studio/jbr\" cd /c/Users/edwar/Documents/GitHub/habit-android cmd //c \"gradlew.bat assembleDebug\")",
+      "Bash(export JAVA_HOME=\"/c/Program Files/Android/Android Studio/jbr\" cmd //c \"C:\\\\Users\\\\edwar\\\\Documents\\\\GitHub\\\\habit-android\\\\gradlew.bat assembleDebug\")",
+      "Bash(curl -sI \"https://upload.wikimedia.org/wikipedia/commons/thumb/e/ec/Mona_Lisa%2C_by_Leonardo_da_Vinci%2C_from_C2RMF_retouched.jpg/402px-Mona_Lisa%2C_by_Leonardo_da_Vinci%2C_from_C2RMF_retouched.jpg\")",
+      "Bash(curl -v -A \"HabitApp/1.0\" -L \"https://upload.wikimedia.org/wikipedia/commons/thumb/e/ec/Mona_Lisa%2C_by_Leonardo_da_Vinci%2C_from_C2RMF_retouched.jpg/402px-Mona_Lisa%2C_by_Leonardo_da_Vinci%2C_from_C2RMF_retouched.jpg\")",
+      "Bash(curl -s -o /tmp/test_direct.jpg -w \"%{http_code}\" -A \"HabitApp/1.0\" -L \"https://upload.wikimedia.org/wikipedia/commons/e/ec/Mona_Lisa%2C_by_Leonardo_da_Vinci%2C_from_C2RMF_retouched.jpg\")"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\edwar\\Documents\\GitHub\\habit-android",
+      "C:\\Users\\edwar\\Documents\\GitHub\\habit\\public\\paintings"
+    ]
+  }
+}

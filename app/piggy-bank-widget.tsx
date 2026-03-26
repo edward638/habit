@@ -124,7 +124,7 @@ export default function PiggyBankWidget({ balanceCents, animate }: PiggyBankWidg
       <div style={{
         fontSize: 28,
         fontWeight: 700,
-        color: isNegative ? theme.colors.error ?? '#ef4444' : theme.colors.primary,
+        color: isNegative ? '#ef4444' : theme.colors.primary,
         animation: balanceAnimating ? 'balance-pop 0.4s ease' : 'none',
         letterSpacing: '-0.5px',
       }}>
